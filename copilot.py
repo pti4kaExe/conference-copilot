@@ -407,7 +407,7 @@ user32 = ctypes.windll.user32
 
 WM_HOTKEY = 0x0312
 MOD_ALT, MOD_CONTROL, MOD_NOREPEAT = 0x0001, 0x0002, 0x4000
-VK = {"Q": 0x51, "H": 0x48, "E": 0x45, "T": 0x54, "S": 0x53, "X": 0x58}
+VK = {"Q": 0x51, "H": 0x48, "E": 0x45, "T": 0x54, "S": 0x53, "X": 0x58, "C": 0x43}
 WDA_NONE, WDA_EXCLUDEFROMCAPTURE = 0x00000000, 0x00000011
 GWL_EXSTYLE = -20
 WS_EX_LAYERED, WS_EX_TRANSPARENT = 0x00080000, 0x00000020
@@ -421,6 +421,46 @@ def dpi_aware() -> None:
             user32.SetProcessDPIAware()
         except Exception:  # noqa: BLE001
             pass
+
+
+def win32_clipboard_set(text: str) -> bool:
+    """Put text into the real Windows clipboard (survives app exit, unlike Tk's)."""
+    user32.OpenClipboard.argtypes = [wt.HWND]
+    user32.OpenClipboard.restype = wt.BOOL
+    user32.EmptyClipboard.restype = wt.BOOL
+    user32.SetClipboardData.argtypes = [wt.UINT, wt.HANDLE]
+    user32.SetClipboardData.restype = wt.HANDLE
+    user32.CloseClipboard.restype = wt.BOOL
+    kernel32 = ctypes.windll.kernel32
+    kernel32.GlobalAlloc.argtypes = [wt.UINT, ctypes.c_size_t]
+    kernel32.GlobalAlloc.restype = wt.HGLOBAL
+    kernel32.GlobalLock.argtypes = [wt.HGLOBAL]
+    kernel32.GlobalLock.restype = ctypes.c_void_p
+    kernel32.GlobalUnlock.argtypes = [wt.HGLOBAL]
+    kernel32.GlobalFree.argtypes = [wt.HGLOBAL]
+
+    cf_unicode_text = 13
+    gmem_moveable = 0x0002
+    data = text.encode("utf-16-le") + b"\x00\x00"
+    if not user32.OpenClipboard(None):
+        return False
+    try:
+        user32.EmptyClipboard()
+        handle = kernel32.GlobalAlloc(gmem_moveable, len(data))
+        if not handle:
+            return False
+        ptr = kernel32.GlobalLock(handle)
+        if not ptr:
+            kernel32.GlobalFree(handle)
+            return False
+        ctypes.memmove(ptr, data, len(data))
+        kernel32.GlobalUnlock(handle)
+        if not user32.SetClipboardData(cf_unicode_text, handle):
+            kernel32.GlobalFree(handle)
+            return False
+        return True
+    finally:
+        user32.CloseClipboard()
 
 
 class HotkeyThread(threading.Thread):
@@ -528,11 +568,14 @@ class Overlay:
         # footer ------------------------------------------------------------
         tk.Label(
             body,
-            text="^⌥Q ответ   ^⌥H скрыть   ^⌥E захват   ^⌥T клик-сквозь   ^⌥S сохранить   ^⌥X выход",
+            text="^⌥Q ответ   ^⌥C копировать   ^⌥H скрыть   ^⌥E захват   ^⌥T клик-сквозь   ^⌥S сохранить   ^⌥X выход",
             fg="#44586a", bg="#0e1318", font=("Segoe UI", 7), anchor="w",
         ).pack(fill="x", padx=10, pady=(0, 6))
 
         self.text_widget = self.txt
+        for widget in (self.txt, self.ans):
+            self._bind_copy(widget)
+        root.bind("<Button-1>", lambda _e: self._activate(), add="+")
         root.protocol("WM_DELETE_WINDOW", self.quit)
         root.after(120, self._poll)
         root.after(400, self._apply_affinity)
@@ -543,8 +586,100 @@ class Overlay:
             "excl": (MOD_CONTROL | MOD_ALT, "E", lambda: self.root.after(0, self.toggle_exclude)),
             "thru": (MOD_CONTROL | MOD_ALT, "T", lambda: self.root.after(0, self.toggle_passthrough)),
             "save": (MOD_CONTROL | MOD_ALT, "S", lambda: self.root.after(0, self.save_transcript)),
+            "copy": (MOD_CONTROL | MOD_ALT, "C", lambda: self.root.after(0, self.copy_all)),
             "quit": (MOD_CONTROL | MOD_ALT, "X", lambda: self.root.after(0, self.quit)),
         }).start()
+
+    # -- clipboard ---------------------------------------------------------
+    def _activate(self) -> None:
+        """An overrideredirect window does not always get keyboard focus on click."""
+        try:
+            self.root.focus_force()
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _bind_copy(self, widget) -> None:
+        widget.bind("<Button-1>", lambda _e, w=widget: self._grab_focus(w), add="+")
+        widget.bind("<ButtonRelease-1>", lambda _e, w=widget: self._auto_copy(w), add="+")
+        widget.bind("<Control-c>", lambda _e, w=widget: self._on_ctrl_c(w), add="+")
+        widget.bind("<Button-3>", lambda e, w=widget: self._context_menu(w, e), add="+")
+
+    def _grab_focus(self, widget) -> None:
+        try:
+            self.root.focus_force()
+            widget.focus_set()
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _to_clipboard(self, text: str) -> None:
+        text = (text or "").strip("\n")
+        if not text:
+            self._set_status("нечего копировать")
+            return
+        if win32_clipboard_set(text):
+            self._set_status("скопировано")
+            return
+        try:  # fallback: tk clipboard (content disappears when the app quits)
+            self.root.clipboard_clear()
+            self.root.clipboard_append(text)
+            self.root.update_idletasks()
+            self._set_status("скопировано")
+        except Exception as exc:  # noqa: BLE001
+            self._set_status(f"буфер обмена: {exc}")
+
+    @staticmethod
+    def _selected_text(widget) -> str:
+        try:
+            return widget.get("sel.first", "sel.last")
+        except Exception:  # noqa: BLE001
+            return ""
+
+    @staticmethod
+    def _pane_text(widget) -> str:
+        return widget.get("1.0", "end").strip()
+
+    def _auto_copy(self, widget) -> None:
+        # disabled Text + overrideredirect window: Ctrl+C often never reaches the
+        # widget, so copy the selection as soon as the mouse button is released
+        text = self._selected_text(widget)
+        if text:
+            self._to_clipboard(text)
+
+    def _on_ctrl_c(self, widget) -> str:
+        self._to_clipboard(self._selected_text(widget) or self._pane_text(widget))
+        return "break"
+
+    def _context_menu(self, widget, event) -> str:
+        menu = self.tk.Menu(self.root, tearoff=0)
+        menu.add_command(label="Копировать всё из панели",
+                         command=lambda: self._to_clipboard(self._pane_text(widget)))
+        menu.add_command(label="Копировать транскрипт и подсказку",
+                         command=self.copy_all)
+        menu.add_separator()
+        menu.add_command(label="Очистить панель",
+                         command=lambda: self._clear_pane(widget))
+        try:
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            menu.grab_release()
+        return "break"
+
+    def _clear_pane(self, widget) -> None:
+        widget.configure(state="normal")
+        widget.delete("1.0", "end")
+        widget.configure(state="disabled")
+        if widget is self.txt:
+            self.lines = []
+        self._set_status("очищено")
+
+    def copy_all(self) -> None:
+        parts = []
+        if self.lines:
+            parts.append("Транскрипт:\n" + "\n".join(self.lines))
+        answer = self._pane_text(self.ans)
+        if answer:
+            parts.append("Подсказка:\n" + answer)
+        self._to_clipboard("\n\n".join(parts))
 
     # -- window helpers ----------------------------------------------------
     def _hwnd(self) -> int:
