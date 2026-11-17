@@ -1,0 +1,17 @@
+{
+  "openrouter_api_key": "",
+  "answer_model": "openai/gpt-4o-mini",
+  "whisper_model": "base",
+  "language": "ru",
+  "cpu_threads": 4,
+  "sample_rate": 16000,
+  "opacity": 0.93,
+  "width": 580,
+  "height": 470,
+  "x": null,
+  "y": null,
+  "hide_from_capture": true,
+  "auto_answers": true,
+  "answer_cooldown_sec": 7,
+  "context_chars": 3000
+}

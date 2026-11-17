@@ -1,0 +1,10 @@
+# локальные секреты и артефакты — не коммитим
+config.json
+notes/
+*.log
+*.wav
+__pycache__/
+*.pyc
+.venv/
+build/
+dist/
