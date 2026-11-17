@@ -413,6 +413,32 @@ GWL_EXSTYLE = -20
 WS_EX_LAYERED, WS_EX_TRANSPARENT = 0x00080000, 0x00000020
 
 
+_MUTEX_HANDLE = None
+
+
+def already_running() -> bool:
+    """True if another overlay instance is already running (named Win32 mutex)."""
+    global _MUTEX_HANDLE
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateMutexW.argtypes = [ctypes.c_void_p, wt.BOOL, wt.LPCWSTR]
+    kernel32.CreateMutexW.restype = wt.HANDLE
+    # Local\ = per Windows session; released automatically when the process dies
+    _MUTEX_HANDLE = kernel32.CreateMutexW(None, wt.BOOL(True), "Local\\ConferenceCopilotOverlay")
+    return ctypes.get_last_error() == 183  # ERROR_ALREADY_EXISTS
+
+
+def focus_existing() -> bool:
+    hwnd = user32.FindWindowW(None, "Conference Copilot")
+    if not hwnd:
+        return False
+    user32.ShowWindow(hwnd, 9)  # SW_RESTORE
+    try:
+        user32.SetForegroundWindow(hwnd)
+    except Exception:  # noqa: BLE001
+        pass
+    return True
+
+
 def dpi_aware() -> None:
     try:
         ctypes.windll.shcore.SetProcessDpiAwareness(2)
@@ -806,6 +832,15 @@ def main() -> int:
     if args.list_devices:
         list_devices()
         return 0
+
+    if already_running():
+        if focus_existing():
+            print("Оверлей уже запущен — переключил на существующее окно.")
+            print("Второй экземпляр не создан. Закрыть: Ctrl+Alt+X в том окне.")
+        else:
+            print("Оверлей уже запущен (окно не найдено). "
+                  "Закрой старый экземпляр или перезагрузи компьютер.")
+        return 2
 
     dpi_aware()
     ensure_config()
