@@ -98,3 +98,19 @@ python copilot.py --selftest 10       :: 10 секунд слушает и пе�
 - **Ошибка OpenRouter 401.** Ключ неверный/закончился баланс.
 - **Окно не появляется.** Оно могло спрятаться за другими окнами — `Ctrl+Alt+H`.
 - **Не видно в Teams при шаринге — это норма**, так задумано (`Ctrl+Alt+E` переключает).
+
+## Если git не подключается к GitHub
+
+В некоторых сетях (корпоративные, часть провайдеров) закрыт порт 22, и `git clone`
+по SSH падает с `Permission denied (publickey)` или `Connection timed out`.
+Рабочая схема — SSH через 443 и системный OpenSSH вместо встроенного в Git for Windows:
+
+```bat
+git clone ssh://git@ssh.github.com:443/pti4kaExe/conference-copilot.git
+cd conference-copilot
+git config core.sshCommand "C:/Windows/System32/OpenSSH/ssh.exe -o BatchMode=yes"
+```
+
+Проверить доступ: `ssh -p 443 -T git@ssh.github.com` — должно ответить
+`Hi <username>! You've successfully authenticated`.
+
